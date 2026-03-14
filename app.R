@@ -21,6 +21,7 @@ ui <- page_sidebar(
       choices = sort(unique(na.omit(parks_df$NeighbourhoodName))),
       multiple = TRUE
     ),
+    # Fixed: the slider range and defaults update to exactly max/min of the dataframe
     sliderInput(
       "size", 
       "Hectare", 
@@ -51,7 +52,7 @@ ui <- page_sidebar(
          DTOutput("table_out")
       ),
       card(
-         card_header("Washroom availability"),
+         card_header("Washroom availability by Neighbourhood"),
          plotlyOutput("washroom_chart")
       )
     ),
@@ -96,9 +97,13 @@ server <- function(input, output, session) {
       Name = df$Name,
       Address = paste(df$StreetNumber, df$StreetName),
       Neighbourhood = df$NeighbourhoodName,
-      URL = df$NeighbourhoodURL
+      # Convert URLs to clickable tags
+      URL = ifelse(!is.na(df$NeighbourhoodURL) & df$NeighbourhoodURL != "", 
+                   paste0('<a href="', df$NeighbourhoodURL, '" target="_blank">', df$NeighbourhoodURL, '</a>'), 
+                   "")
     )
-    datatable(display_df, options = list(pageLength = 5, dom = 'ftp'))
+    # Important: escape=FALSE is needed to render the HTML tags in the table
+    datatable(display_df, escape = FALSE, options = list(pageLength = 5, dom = 'ftp'))
   })
   
   output$park_map <- renderLeaflet({
@@ -132,16 +137,61 @@ server <- function(input, output, session) {
   })
   
   output$washroom_chart <- renderPlotly({
-    df <- filtered()
+    # We want to show a bar chart of washrooms per neighbourhood based on ALL parks
+    # But we want to highlight the neighbourhoods that are currently selected in the filter.
     
-    counts <- df %>%
-      count(Washrooms) %>%
-      mutate(Washrooms = ifelse(Washrooms == "Y", "Yes", "No"))
+    # 1. Total washrooms per neighbourhood across ALL parks
+    all_counts <- parks_df %>%
+      filter(Washrooms == "Y") %>%
+      group_by(NeighbourhoodName) %>%
+      summarise(Count = n(), .groups = 'drop')
       
-    p <- plot_ly(counts, labels = ~Washrooms, values = ~n, type = 'pie',
-                 textinfo = 'label+percent',
-                 marker = list(colors = c("darkgreen", "lightgreen"))) %>%
-         layout(showlegend = TRUE)
+    # 2. Extract selected neighbourhoods from the dropdown input
+    selected_neighs <- input$neighbourhood
+    
+    # 3. Determine colors. Light red if selected (or if nothing is selected), grey otherwise
+    all_counts <- all_counts %>%
+      mutate(
+        Color = ifelse(is.null(selected_neighs) || length(selected_neighs) == 0 || NeighbourhoodName %in% selected_neighs,
+                       "#285F2A", # Green for active selection
+                       "#bdbdbd"  # Grey out otherwise
+                      )
+      )
+      
+    # 4. Average washroom count
+    avg <- mean(all_counts$Count, na.rm=TRUE)
+    
+    # 5. Plotly Bar Chart
+    p <- plot_ly(
+      data = all_counts,
+      x = ~NeighbourhoodName,
+      y = ~Count,
+      type = 'bar',
+      marker = list(color = ~Color)
+    ) %>%
+    layout(
+      xaxis = list(
+        title = list(text = "Neighbourhood", font = list(size=14)), 
+        tickangle = -45,
+        tickfont = list(size=10)
+      ),
+      yaxis = list(title = list(text = "Total Washrooms", font = list(size=14))),
+      showlegend = FALSE,
+      # Add horizontal dotted average line
+      shapes = list(
+        list(
+          type = "line",
+          y0 = avg,
+          y1 = avg,
+          x0 = 0,
+          x1 = 1,
+          xref = "paper",
+          line = list(color = "red", dash = "dot", width = 2)
+        )
+      ),
+      margin = list(b = 100) # Give space for x-axis labels
+    )
+    
     p
   })
 }
