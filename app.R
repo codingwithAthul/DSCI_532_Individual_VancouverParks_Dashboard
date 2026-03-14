@@ -63,4 +63,87 @@ ui <- page_sidebar(
   )
 )
 
+server <- function(input, output, session) {
+  
+  # Reactive Data Filter
+  filtered <- reactive({
+    df <- parks_df
+    
+    if (isTruthy(input$search)) {
+      df <- df %>% filter(grepl(input$search, Name, ignore.case = TRUE))
+    }
+    
+    if (isTruthy(input$neighbourhood)) {
+      df <- df %>% filter(NeighbourhoodName %in% input$neighbourhood)
+    }
+    
+    df <- df %>% filter(Hectare >= input$size[1] & Hectare <= input$size[2])
+    
+    if (isTruthy(input$facilities)) {
+      for (facility in input$facilities) {
+        # Using `.data[[facility]]` handles the dynamic column string
+        df <- df %>% filter(.data[[facility]] == "Y")
+      }
+    }
+    
+    df
+  })
+  
+  # Outputs
+  output$table_out <- renderDT({
+    df <- filtered()
+    display_df <- data.frame(
+      Name = df$Name,
+      Address = paste(df$StreetNumber, df$StreetName),
+      Neighbourhood = df$NeighbourhoodName,
+      URL = df$NeighbourhoodURL
+    )
+    datatable(display_df, options = list(pageLength = 5, dom = 'ftp'))
+  })
+  
+  output$park_map <- renderLeaflet({
+    df <- filtered()
+    
+    m <- leaflet() %>%
+      addTiles() %>%
+      setView(lng = -123.1207, lat = 49.2827, zoom = 12)
+      
+    if (nrow(df) > 0) {
+      # Extract lat/lon safely
+      valid_coords <- df %>% 
+        filter(!is.na(GoogleMapDest) & GoogleMapDest != "") %>%
+        rowwise() %>%
+        mutate(
+          lat = as.numeric(strsplit(as.character(GoogleMapDest), ",")[[1]][1]),
+          lon = as.numeric(strsplit(as.character(GoogleMapDest), ",")[[1]][2])
+        ) %>%
+        ungroup()
+        
+      if (nrow(valid_coords) > 0) {
+        m <- m %>% addMarkers(
+          data = valid_coords,
+          lng = ~lon, lat = ~lat,
+          popup = ~paste0("<b>", Name, "</b><br>Neighbourhood: ", NeighbourhoodName, "<br>Size: ", Hectare, " ha")
+        )
+      }
+    }
+    
+    m
+  })
+  
+  output$washroom_chart <- renderPlotly({
+    df <- filtered()
+    
+    counts <- df %>%
+      count(Washrooms) %>%
+      mutate(Washrooms = ifelse(Washrooms == "Y", "Yes", "No"))
+      
+    p <- plot_ly(counts, labels = ~Washrooms, values = ~n, type = 'pie',
+                 textinfo = 'label+percent',
+                 marker = list(colors = c("darkgreen", "lightgreen"))) %>%
+         layout(showlegend = TRUE)
+    p
+  })
+}
 
+shinyApp(ui, server)
